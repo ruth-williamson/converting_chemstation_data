@@ -1,0 +1,235 @@
+---
+title: "chemstation_to_chromeleon"
+format: html
+---
+
+```{r}
+#loading libraries
+library(chromConverter)
+library(tidyverse)
+library(tibble)
+```
+
+```{r}
+library(fs)
+
+in_dir  <- "stds.d"
+out_dir <- "stds.d"
+dir_create(out_dir)
+
+# Find .D directories (case-insensitive)
+d_folders <- dir_ls(in_dir, type = "directory", regexp = "(?i)\\.d$")
+
+convert_one <- function(d_path, out_dir) {
+  message("Converting: ", d_path)
+
+  # 1) Read MS from the .D folder using rainbow wrapper
+  #    call_rainbow can read agilent .D directories; set what="MS" to target MS detector streams
+  ms <- call_rainbow(
+    path       = d_path,
+    format_in  = "agilent_d",
+    by         = "detector",
+    what       = "MS",
+    data_format = "long",
+    format_out  = "data.frame",
+    read_metadata = TRUE
+  )
+
+  # call_rainbow() returns a nested list when by="detector"
+  # Typically ms$MS (or similar) holds the MS scans/chroms depending on the file contents.
+  # We'll try a few common shapes safely:
+  ms_data <- NULL
+  if (is.list(ms) && "MS" %in% names(ms)) ms_data <- ms$MS
+  if (is.null(ms_data) && length(ms) == 1) ms_data <- ms[[1]]
+  if (is.null(ms_data)) stop("No MS stream found in: ", d_path)
+
+  # 2) Write mzML
+  mzml_path <- path(out_dir, paste0(path_file(d_path), ".mzML"))
+
+  write_mzml(
+    data         = ms_data,
+    path_out     = mzml_path,
+    what         = c("ms1", "tic", "bpc"),
+    compress     = TRUE,
+    indexed      = TRUE,
+    force        = TRUE,
+    show_progress = TRUE
+  )
+
+  invisible(mzml_path)
+}
+
+mzml_files <- vapply(d_folders, convert_one, out_dir = out_dir, FUN.VALUE = character(1))
+mzml_files
+
+```
+
+```{r}
+library(chromConverter)
+library(fs)
+
+# Folder that contains many .D directories
+in_dir  <- "stds.d"
+
+# Separate output folder (recommended)
+out_dir <- path(in_dir, "mzML_out")
+dir_create(out_dir)
+
+# Find all .D directories
+d_folders <- dir_ls(in_dir, type = "directory", regexp = "(?i)\\.d$")
+
+# Helper to make safe filenames (Chromeleon tends to like simple names)
+safe_name <- function(x) {
+  x <- path_file(x)                      # keep just the folder name
+  x <- sub("(?i)\\.d$", "", x, perl=TRUE) # drop trailing .D
+  x <- gsub("[^A-Za-z0-9]+", "_", x)     # replace spaces/symbols with _
+  x <- gsub("^_+|_+$", "", x)            # trim underscores
+  x
+}
+
+for (d_path in d_folders) {
+
+  message("Reading: ", d_path)
+
+  # Read from Agilent .D directory (supports chroms/dad/peak_table etc.) [2](https://ethanbass.r-universe.dev/chromConverter/doc/manual.html)
+  dat <- read_agilent_d(
+    path        = d_path,
+    what        = c("chroms", "dad"),   # adjust if needed
+    data_format = "long",
+    format_out  = "data.frame",
+    read_metadata = TRUE
+  )
+
+  # Build output mzML FILE path
+  out_file <- path(out_dir, paste0(safe_name(d_path), ".mzML"))
+
+  message("Writing: ", out_file)
+
+  # write_mzml() expects a file path; it won't create parent dirs [1](https://www.rdocumentation.org/packages/chromConverter/versions/0.7.5/topics/write_mzml)
+  write_mzml(
+    data       = dat,
+    path_out   = out_file,
+    what       = c("MS"),     # for UV/DAD; for MS you might use c("ms1","tic","bpc")
+    compress   = TRUE,
+    indexed    = TRUE,
+    force      = TRUE
+  )
+}
+```
+
+```{r}
+library(chromConverter)
+library(fs)
+
+in_dir  <- "stds.d"
+out_dir <- path(in_dir, "mzML_out2")
+dir_create(out_dir)
+
+d_folders <- dir_ls(in_dir, type = "directory", regexp = "(?i)\\.d$")
+
+safe_name <- function(x) {
+  x <- path_file(x)
+  x <- sub("(?i)\\.d$", "", x, perl = TRUE)
+  x <- gsub("[^A-Za-z0-9]+", "_", x)
+  x <- gsub("^_+|_+$", "", x)
+  x
+}
+
+for (d_path in d_folders) {
+  message("Reading MS from: ", d_path)
+
+  # Read Agilent .D using rainbow, filtered to MS detector stream
+  # call_rainbow supports agilent .D directories and filtering by detector via `what` [1](https://ethanbass.r-universe.dev/chromConverter/doc/manual.html)
+  ms <- call_rainbow(
+    path         = d_path,
+    format_in    = "agilent_d",
+    by           = "detector",
+    what         = "MS",
+    data_format  = "long",
+    format_out   = "data.frame",
+    read_metadata = TRUE
+  )
+
+  # Pull out the MS stream (structure can vary by file)
+  ms_data <- NULL
+  if (is.list(ms) && "MS" %in% names(ms)) ms_data <- ms$MS
+  if (is.null(ms_data) && length(ms) == 1) ms_data <- ms[[1]]
+  if (is.null(ms_data)) stop("No MS stream found in: ", d_path)
+
+  out_file <- path(out_dir, paste0(safe_name(d_path), ".mzML"))
+  message("Writing: ", out_file)
+
+  # For full GC/MS (MS1 + chromatograms)
+  # write_mzml supports streams ms1/tic/bpc/dad/ms2 [2](https://www.rdocumentation.org/packages/chromConverter/versions/0.7.5/topics/write_mzml)[3](https://rdrr.io/cran/chromConverter/man/write_mzml.html)
+  write_mzml(
+    data      = ms_data,
+    path_out  = out_file,
+    what      = c("ms1", "tic", "bpc"),
+    compress  = TRUE,
+    indexed   = TRUE,
+    force     = TRUE
+  )
+}
+```
+it appears like the code starting from here down is effective??? 
+
+I ran it and it wrote all 13 10ppm stds and blanks into mzML format. 
+
+They are too big to open here so I will transfer them back to the hard drive and see if I can get them to open on chromeleon.
+```{r}
+library(chromConverter)
+library(fs)
+
+in_dir  <- "stds.d"
+out_dir <- path(in_dir, "mzML_out3")
+dir_create(out_dir)
+
+d_folders <- dir_ls(in_dir, type = "directory", regexp = "(?i)\\.d$")
+
+safe_name <- function(x) {
+  x <- path_file(x)
+  x <- sub("(?i)\\.d$", "", x, perl = TRUE)
+  x <- gsub("[^A-Za-z0-9]+", "_", x)
+  x <- gsub("^_+|_+$", "", x)
+  x
+}
+
+for (d_path in d_folders) {
+
+  message("Reading MS from: ", d_path)
+
+  # Read Agilent .D via rainbow; can filter by detector using `what` [3](https://ethanbass.r-universe.dev/chromConverter/doc/manual.html)
+  ms <- call_rainbow(
+    path          = d_path,
+    format_in     = "agilent_d",
+    by            = "detector",
+    what          = "MS",
+    data_format   = "long",
+    format_out    = "data.frame",
+    read_metadata = TRUE
+  )
+
+  # Pull out MS stream
+  ms_data <- NULL
+  if (is.list(ms) && "MS" %in% names(ms)) ms_data <- ms$MS
+  if (is.null(ms_data) && length(ms) == 1) ms_data <- ms[[1]]
+  if (is.null(ms_data)) stop("No MS stream found in: ", d_path)
+
+  samp <- safe_name(d_path)
+
+  message("Writing mzML for sample: ", samp, " -> ", out_dir)
+
+  # IMPORTANT: path_out is a DIRECTORY, sample_name provides the base filename [1](https://www.rdocumentation.org/packages/chromConverter/versions/0.7.5/topics/write_mzml)[2](https://rdrr.io/cran/chromConverter/man/write_mzml.html)
+  write_mzml(
+    data       = ms_data,
+    path_out   = out_dir,
+    sample_name = samp,
+    what       = c("ms1", "tic", "bpc"),
+    compress   = TRUE,
+    indexed    = TRUE,
+    force      = TRUE,
+    show_progress = FALSE
+  )
+}
+```
+
